@@ -312,6 +312,81 @@ function createServer() {
 			return textResult(data);
 		},
 	);
+	server.registerTool(
+		"statsbomb_competitions",
+		{
+			description:
+				"List all competitions and seasons available in StatsBomb Open Data.",
+			inputSchema: {},
+		},
+		async () => {
+			const response = await fetch(
+				"https://raw.githubusercontent.com/statsbomb/open-data/master/data/competitions.json",
+			);
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
+
+	server.registerTool(
+		"statsbomb_matches",
+		{
+			description:
+				"Get all matches for a StatsBomb competition and season.",
+			inputSchema: {
+				competition_id: z.number().int(),
+				season_id: z.number().int(),
+			},
+		},
+		async ({ competition_id, season_id }) => {
+			const response = await fetch(
+				`https://raw.githubusercontent.com/statsbomb/open-data/master/data/matches/${competition_id}/${season_id}.json`,
+			);
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
+
+	server.registerTool(
+		"statsbomb_events",
+		{
+			description:
+				"Get detailed StatsBomb event data for a match including passes, shots, pressures, recoveries, duels and carries.",
+			inputSchema: {
+				match_id: z.number().int(),
+			},
+		},
+		async ({ match_id }) => {
+			const response = await fetch(
+				`https://raw.githubusercontent.com/statsbomb/open-data/master/data/events/${match_id}.json`,
+			);
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
+
+	server.registerTool(
+		"statsbomb_lineups",
+		{
+			description:
+				"Get StatsBomb lineups and player IDs for a specific match.",
+			inputSchema: {
+				match_id: z.number().int(),
+			},
+		},
+		async ({ match_id }) => {
+			const response = await fetch(
+				`https://raw.githubusercontent.com/statsbomb/open-data/master/data/lineups/${match_id}.json`,
+			);
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
+	
 	return server;
 }
 
