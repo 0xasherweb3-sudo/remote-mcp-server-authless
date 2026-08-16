@@ -386,6 +386,95 @@ function createServer() {
 			return textResult(data);
 		},
 	);
+		server.registerTool(
+		"understat_player",
+		{
+			description:
+				"Get Understat player data including xG, xA, shots, key passes, xGChain and xGBuildup.",
+			inputSchema: {
+				player_id: z.number().int().describe("Understat player ID"),
+			},
+		},
+		async ({ player_id }) => {
+			const response = await fetch(
+				`https://understat.com/player/${player_id}`,
+				{
+					headers: {
+						"User-Agent": "Mozilla/5.0",
+						Accept: "text/html",
+					},
+				},
+			);
+
+			const html = await response.text();
+
+			return textResult({
+				status: response.status,
+				html,
+			});
+		},
+	);
+
+	server.registerTool(
+		"understat_match",
+		{
+			description:
+				"Get raw Understat match page data used for xG and shot analysis.",
+			inputSchema: {
+				match_id: z.number().int().describe("Understat match ID"),
+			},
+		},
+		async ({ match_id }) => {
+			const response = await fetch(
+				`https://understat.com/match/${match_id}`,
+				{
+					headers: {
+						"User-Agent": "Mozilla/5.0",
+						Accept: "text/html",
+					},
+				},
+			);
+
+			const html = await response.text();
+
+			return textResult({
+				status: response.status,
+				html,
+			});
+		},
+	);
+
+	server.registerTool(
+		"understat_league",
+		{
+			description:
+				"Get an Understat league page for a specific season.",
+			inputSchema: {
+				league: z
+					.enum(["EPL", "La_liga", "Bundesliga", "Serie_A", "Ligue_1", "RFPL"])
+					.describe("Understat league name"),
+				season: z.number().int().describe("Season starting year"),
+			},
+		},
+		async ({ league, season }) => {
+			const response = await fetch(
+				`https://understat.com/league/${league}/${season}`,
+				{
+					headers: {
+						"User-Agent": "Mozilla/5.0",
+						Accept: "text/html",
+					},
+				},
+			);
+
+			const html = await response.text();
+
+			return textResult({
+				status: response.status,
+				html,
+			});
+		},
+	);
 	
 	return server;
 }
