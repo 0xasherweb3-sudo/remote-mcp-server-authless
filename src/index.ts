@@ -137,6 +137,80 @@ function createServer() {
 		},
 	);
 
+		server.registerTool(
+		"fotmob_search",
+		{
+			description:
+				"Search FotMob for players, teams and competitions. Use this to find FotMob IDs.",
+			inputSchema: {
+				query: z.string().min(2).describe("Search term, for example Mikautadze"),
+			},
+		},
+		async ({ query }) => {
+			const url = new URL("https://www.fotmob.com/api/searchData");
+			url.searchParams.set("term", query);
+
+			const response = await fetch(url.toString(), {
+				headers: {
+					"User-Agent": "Mozilla/5.0",
+					Accept: "application/json",
+				},
+			});
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
+
+	server.registerTool(
+		"fotmob_player",
+		{
+			description:
+				"Get current FotMob player profile, recent matches, career information and available player statistics.",
+			inputSchema: {
+				player_id: z.number().int().describe("FotMob player ID"),
+			},
+		},
+		async ({ player_id }) => {
+			const url = new URL("https://www.fotmob.com/api/playerData");
+			url.searchParams.set("id", String(player_id));
+
+			const response = await fetch(url.toString(), {
+				headers: {
+					"User-Agent": "Mozilla/5.0",
+					Accept: "application/json",
+				},
+			});
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
+
+	server.registerTool(
+		"fotmob_match",
+		{
+			description:
+				"Get detailed FotMob match data including lineups, events, statistics, player ratings, xG and shotmap when available.",
+			inputSchema: {
+				match_id: z.number().int().describe("FotMob match ID"),
+			},
+		},
+		async ({ match_id }) => {
+			const url = new URL("https://www.fotmob.com/api/matchDetails");
+			url.searchParams.set("matchId", String(match_id));
+
+			const response = await fetch(url.toString(), {
+				headers: {
+					"User-Agent": "Mozilla/5.0",
+					Accept: "application/json",
+				},
+			});
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
 	return server;
 }
 
