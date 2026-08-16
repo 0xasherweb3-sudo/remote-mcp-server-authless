@@ -2,65 +2,51 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 
-function createServer() {
+type AppEnv = Env & {
+	API_FOOTBALL_KEY: string;
+};
+
+function createServer(env: AppEnv) {
 	const server = new McpServer({
-		name: "Authless Calculator",
+		name: "Football Data MCP",
 		version: "1.0.0",
 	});
 
 	server.registerTool(
-		"add",
-		{ inputSchema: z.object({ a: z.number(), b: z.number() }) },
-		async ({ a, b }) => ({
-			content: [{ type: "text", text: String(a + b) }],
-		}),
-	);
-
-	server.registerTool(
-		"calculate",
+		"api_status",
 		{
-			inputSchema: z.object({
-				operation: z.enum(["add", "subtract", "multiply", "divide"]),
-				a: z.number(),
-				b: z.number(),
-			}),
+			description: "Check that the API-Football connection is working",
+			inputSchema: z.object({}),
 		},
-		async ({ operation, a, b }) => {
-			let result: number;
-			switch (operation) {
-				case "add":
-					result = a + b;
-					break;
-				case "subtract":
-					result = a - b;
-					break;
-				case "multiply":
-					result = a * b;
-					break;
-				case "divide":
-					if (b === 0)
-						return {
-							content: [
-								{
-									type: "text",
-									text: "Error: Cannot divide by zero",
-								},
-							],
-						};
-					result = a / b;
-					break;
-			}
-			return { content: [{ type: "text", text: String(result) }] };
+		async () => {
+			const response = await fetch(
+				"https://v3.football.api-sports.io/status",
+				{
+					headers: {
+						"x-apisports-key": env.API_FOOTBALL_KEY,
+					},
+				},
+			);
+
+			const data = await response.json();
+
+			return {
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify(data, null, 2),
+					},
+				],
+			};
 		},
 	);
 
 	return server;
 }
 
-const handler = createMcpHandler(createServer);
-
 export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+	fetch(request: Request, env: AppEnv, ctx: ExecutionContext) {
+		const handler = createMcpHandler(() => createServer(env));
 		return handler(request, env, ctx);
 	},
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<AppEnv>;
