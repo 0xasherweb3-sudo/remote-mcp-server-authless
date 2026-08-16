@@ -74,39 +74,61 @@ async function fetchUnderstatPage(url: string) {
 	return await response.text();
 }
 
-/**
- * Understat stores datasets like:
- *
- * var playersData = JSON.parse('...');
- *
- * Values use \xNN escaping.
- */
 function extractUnderstatJson(html: string, variableName: string) {
-	const variablePos = html.indexOf(`var ${variableName}`);
+	const queryIndex = html.indexOf(variableName);
 
-	if (variablePos === -1) {
+	if (queryIndex === -1) {
 		throw new Error(
 			`Understat variable "${variableName}" was not found`,
 		);
 	}
 
-	const jsonParsePos = html.indexOf("JSON.parse('", variablePos);
+	const jsonParseIndex = html.indexOf("JSON.parse(", queryIndex);
 
-	if (jsonParsePos === -1) {
+	if (jsonParseIndex === -1) {
 		throw new Error(
 			`JSON.parse block not found for "${variableName}"`,
 		);
 	}
 
-	const start = jsonParsePos + "JSON.parse('".length;
+	let start = jsonParseIndex + "JSON.parse(".length;
+
+	while (
+		start < html.length &&
+		html[start] !== "'" &&
+		html[start] !== '"'
+	) {
+		start++;
+	}
+
+	if (start >= html.length) {
+		throw new Error(
+			`Opening quote not found for "${variableName}"`,
+		);
+	}
+
+	const quote = html[start];
+	start++;
 
 	let end = start;
+	let escaped = false;
 
 	while (end < html.length) {
-		if (
-			html[end] === "'" &&
-			html[end - 1] !== "\\"
-		) {
+		const char = html[end];
+
+		if (escaped) {
+			escaped = false;
+			end++;
+			continue;
+		}
+
+		if (char === "\\") {
+			escaped = true;
+			end++;
+			continue;
+		}
+
+		if (char === quote) {
 			break;
 		}
 
@@ -115,7 +137,7 @@ function extractUnderstatJson(html: string, variableName: string) {
 
 	if (end >= html.length) {
 		throw new Error(
-			`End of Understat dataset "${variableName}" not found`,
+			`Closing quote not found for "${variableName}"`,
 		);
 	}
 
@@ -123,6 +145,9 @@ function extractUnderstatJson(html: string, variableName: string) {
 
 	const decoded = encoded
 		.replace(/\\x([0-9A-Fa-f]{2})/g, (_, hex) =>
+			String.fromCharCode(parseInt(hex, 16)),
+		)
+		.replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) =>
 			String.fromCharCode(parseInt(hex, 16)),
 		)
 		.replace(/\\'/g, "'")
@@ -186,7 +211,7 @@ function normalizeUnderstatPlayer(player: any) {
 function createServer() {
 	const server = new McpServer({
 		name: "Football Analytics MCP",
-		version: "2.0.0",
+		version: "2.1.0",
 	});
 
 	/* =====================================================
@@ -201,9 +226,7 @@ function createServer() {
 			inputSchema: {},
 		},
 		async () => {
-			return textResult(
-				await apiFootball("/status"),
-			);
+			return textResult(await apiFootball("/status"));
 		},
 	);
 
@@ -213,17 +236,12 @@ function createServer() {
 			description:
 				"Search API-Football for a player. Useful for historical seasons and player IDs.",
 			inputSchema: {
-				name: z
-					.string()
-					.min(3)
-					.describe("Player name"),
+				name: z.string().min(3).describe("Player name"),
 				season: z
 					.number()
 					.int()
 					.optional()
-					.describe(
-						"Season starting year, e.g. 2024",
-					),
+					.describe("Season starting year, e.g. 2024"),
 			},
 		},
 		async ({ name, season }) => {
@@ -285,12 +303,9 @@ function createServer() {
 		},
 		async ({ fixture_id }) => {
 			return textResult(
-				await apiFootball(
-					"/fixtures/players",
-					{
-						fixture: fixture_id,
-					},
-				),
+				await apiFootball("/fixtures/players", {
+					fixture: fixture_id,
+				}),
 			);
 		},
 	);
@@ -325,10 +340,7 @@ function createServer() {
 				season_id: z.number().int(),
 			},
 		},
-		async ({
-			competition_id,
-			season_id,
-		}) => {
+		async ({ competition_id, season_id }) => {
 			return textResult(
 				await fetchJson(
 					`https://raw.githubusercontent.com/statsbomb/open-data/master/data/matches/${competition_id}/${season_id}.json`,
@@ -414,27 +426,21 @@ function createServer() {
 				season: z
 					.number()
 					.int()
-					.describe(
-						"Season starting year, e.g. 2025 for 2025/26",
-					),
+					.describe("Season starting year, e.g. 2025 for 2025/26"),
 			},
 		},
 		async ({ league, season }) => {
-			const html =
-				await fetchUnderstatPage(
-					`https://understat.com/league/${league}/${season}`,
-				);
+			const html = await fetchUnderstatPage(
+				`https://understat.com/league/${league}/${season}`,
+			);
 
-			const players =
-				extractUnderstatJson(
-					html,
-					"playersData",
-				);
+			const players = extractUnderstatJson(
+				html,
+				"playersData",
+			);
 
 			return textResult(
-				players.map(
-					normalizeUnderstatPlayer,
-				),
+				players.map(normalizeUnderstatPlayer),
 			);
 		},
 	);
@@ -448,44 +454,33 @@ function createServer() {
 				query: z
 					.string()
 					.min(2)
-					.describe(
-						"Player name, e.g. Mikautadze",
-					),
+					.describe("Player name, e.g. Mikautadze"),
 				league: understatLeagueSchema,
 				season: z.number().int(),
 			},
 		},
-		async ({
-			query,
-			league,
-			season,
-		}) => {
-			const html =
-				await fetchUnderstatPage(
-					`https://understat.com/league/${league}/${season}`,
-				);
+		async ({ query, league, season }) => {
+			const html = await fetchUnderstatPage(
+				`https://understat.com/league/${league}/${season}`,
+			);
 
-			const players =
-				extractUnderstatJson(
-					html,
-					"playersData",
-				);
+			const players = extractUnderstatJson(
+				html,
+				"playersData",
+			);
 
-			const normalized =
-				players.map(
-					normalizeUnderstatPlayer,
-				);
+			const normalized = players.map(
+				normalizeUnderstatPlayer,
+			);
 
-			const search =
-				query.toLowerCase();
+			const search = query.toLowerCase();
 
-			const results =
-				normalized.filter(
-					(player: any) =>
-						String(player.name)
-							.toLowerCase()
-							.includes(search),
-				);
+			const results = normalized.filter(
+				(player: any) =>
+					String(player.name)
+						.toLowerCase()
+						.includes(search),
+			);
 
 			return textResult(results);
 		},
@@ -501,15 +496,11 @@ function createServer() {
 			},
 		},
 		async ({ player_id }) => {
-			const html =
-				await fetchUnderstatPage(
-					`https://understat.com/player/${player_id}`,
-				);
+			const html = await fetchUnderstatPage(
+				`https://understat.com/player/${player_id}`,
+			);
 
-			const result: Record<
-				string,
-				unknown
-			> = {};
+			const result: Record<string, unknown> = {};
 
 			for (const variable of [
 				"matchesData",
@@ -541,15 +532,11 @@ function createServer() {
 			},
 		},
 		async ({ match_id }) => {
-			const html =
-				await fetchUnderstatPage(
-					`https://understat.com/match/${match_id}`,
-				);
+			const html = await fetchUnderstatPage(
+				`https://understat.com/match/${match_id}`,
+			);
 
-			const result: Record<
-				string,
-				unknown
-			> = {};
+			const result: Record<string, unknown> = {};
 
 			for (const variable of [
 				"shotsData",
@@ -582,16 +569,14 @@ function createServer() {
 			},
 		},
 		async ({ league, season }) => {
-			const html =
-				await fetchUnderstatPage(
-					`https://understat.com/league/${league}/${season}`,
-				);
+			const html = await fetchUnderstatPage(
+				`https://understat.com/league/${league}/${season}`,
+			);
 
-			const teams =
-				extractUnderstatJson(
-					html,
-					"teamsData",
-				);
+			const teams = extractUnderstatJson(
+				html,
+				"teamsData",
+			);
 
 			return textResult(teams);
 		},
@@ -610,8 +595,10 @@ export default {
 		env: Env,
 		ctx: ExecutionContext,
 	) {
-		return createMcpHandler(
-			createServer,
-		)(request, env, ctx);
+		return createMcpHandler(createServer)(
+			request,
+			env,
+			ctx,
+		);
 	},
 } satisfies ExportedHandler<Env>;
