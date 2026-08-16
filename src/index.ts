@@ -1,12 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
+import { env } from "cloudflare:workers";
 import { z } from "zod";
 
-type AppEnv = Env & {
-	API_FOOTBALL_KEY: string;
-};
-
-function createServer(env: AppEnv) {
+function createServer() {
 	const server = new McpServer({
 		name: "Football Data MCP",
 		version: "1.0.0",
@@ -23,7 +20,7 @@ function createServer(env: AppEnv) {
 				"https://v3.football.api-sports.io/status",
 				{
 					headers: {
-						"x-apisports-key": env.API_FOOTBALL_KEY,
+						"x-apisports-key": env.API_FOOTBALL_KEY as string,
 					},
 				},
 			);
@@ -45,8 +42,7 @@ function createServer(env: AppEnv) {
 }
 
 export default {
-	fetch(request: Request, env: AppEnv, ctx: ExecutionContext) {
-		const handler = createMcpHandler(() => createServer(env));
-		return handler(request, env, ctx);
+	fetch(request, env, ctx) {
+		return createMcpHandler(createServer)(request, env, ctx);
 	},
-} satisfies ExportedHandler<AppEnv>;
+} satisfies ExportedHandler;
