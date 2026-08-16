@@ -18,6 +18,10 @@ function textResult(data: unknown) {
 	};
 }
 
+/* =========================================================
+   API-FOOTBALL
+========================================================= */
+
 async function apiFootball(
 	path: string,
 	params: Record<string, string | number | undefined> = {},
@@ -40,6 +44,10 @@ async function apiFootball(
 	return await response.json();
 }
 
+/* =========================================================
+   GENERIC JSON
+========================================================= */
+
 async function fetchJson(url: string) {
 	const response = await fetch(url, {
 		headers: {
@@ -55,106 +63,43 @@ async function fetchJson(url: string) {
 	return await response.json();
 }
 
-async function fetchUnderstatPage(url: string) {
+/* =========================================================
+   UNDERSTAT AJAX API
+========================================================= */
+
+async function understatAjax(path: string) {
+	const url = `https://understat.com/${path}`;
+
 	const response = await fetch(url, {
 		headers: {
+			"X-Requested-With": "XMLHttpRequest",
+			Accept: "application/json",
 			"User-Agent":
 				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/141 Safari/537.36",
-			Accept:
-				"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-			"Accept-Language": "en-US,en;q=0.9",
 			Referer: "https://understat.com/",
 		},
 	});
 
 	if (!response.ok) {
-		throw new Error(`Understat returned HTTP ${response.status}`);
-	}
-
-	return await response.text();
-}
-
-function extractUnderstatJson(html: string, variableName: string) {
-	const queryIndex = html.indexOf(variableName);
-
-	if (queryIndex === -1) {
 		throw new Error(
-			`Understat variable "${variableName}" was not found`,
+			`Understat AJAX returned HTTP ${response.status} for ${path}`,
 		);
 	}
 
-	const jsonParseIndex = html.indexOf("JSON.parse(", queryIndex);
+	const contentType = response.headers.get("content-type") ?? "";
 
-	if (jsonParseIndex === -1) {
+	if (!contentType.includes("application/json")) {
+		const body = await response.text();
+
 		throw new Error(
-			`JSON.parse block not found for "${variableName}"`,
+			`Understat returned non-JSON response for ${path}: ${body.slice(
+				0,
+				200,
+			)}`,
 		);
 	}
 
-	let start = jsonParseIndex + "JSON.parse(".length;
-
-	while (
-		start < html.length &&
-		html[start] !== "'" &&
-		html[start] !== '"'
-	) {
-		start++;
-	}
-
-	if (start >= html.length) {
-		throw new Error(
-			`Opening quote not found for "${variableName}"`,
-		);
-	}
-
-	const quote = html[start];
-	start++;
-
-	let end = start;
-	let escaped = false;
-
-	while (end < html.length) {
-		const char = html[end];
-
-		if (escaped) {
-			escaped = false;
-			end++;
-			continue;
-		}
-
-		if (char === "\\") {
-			escaped = true;
-			end++;
-			continue;
-		}
-
-		if (char === quote) {
-			break;
-		}
-
-		end++;
-	}
-
-	if (end >= html.length) {
-		throw new Error(
-			`Closing quote not found for "${variableName}"`,
-		);
-	}
-
-	const encoded = html.slice(start, end);
-
-	const decoded = encoded
-		.replace(/\\x([0-9A-Fa-f]{2})/g, (_, hex) =>
-			String.fromCharCode(parseInt(hex, 16)),
-		)
-		.replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) =>
-			String.fromCharCode(parseInt(hex, 16)),
-		)
-		.replace(/\\'/g, "'")
-		.replace(/\\"/g, '"')
-		.replace(/\\\\/g, "\\");
-
-	return JSON.parse(decoded);
+	return await response.json();
 }
 
 function normalizeUnderstatPlayer(player: any) {
@@ -173,6 +118,7 @@ function normalizeUnderstatPlayer(player: any) {
 		name: player.player_name,
 		team: player.team_title,
 		position: player.position,
+
 		games: Number(player.games ?? 0),
 		starts: Number(player.starts ?? 0),
 		minutes,
@@ -193,11 +139,14 @@ function normalizeUnderstatPlayer(player: any) {
 		per90: {
 			goals: per90(player.goals),
 			assists: per90(player.assists),
+
 			xG: per90(player.xG),
 			npxG: per90(player.npxG),
 			xA: per90(player.xA),
+
 			shots: per90(player.shots),
 			keyPasses: per90(player.key_passes),
+
 			xGChain: per90(player.xGChain),
 			xGBuildup: per90(player.xGBuildup),
 		},
@@ -205,13 +154,13 @@ function normalizeUnderstatPlayer(player: any) {
 }
 
 /* =========================================================
-   SERVER
+   MCP SERVER
 ========================================================= */
 
 function createServer() {
 	const server = new McpServer({
 		name: "Football Analytics MCP",
-		version: "2.1.0",
+		version: "3.0.0",
 	});
 
 	/* =====================================================
@@ -222,7 +171,7 @@ function createServer() {
 		"api_status",
 		{
 			description:
-				"Check API-Football connection and current subscription status.",
+				"Check API-Football connection and subscription status.",
 			inputSchema: {},
 		},
 		async () => {
@@ -234,14 +183,10 @@ function createServer() {
 		"api_search_player",
 		{
 			description:
-				"Search API-Football for a player. Useful for historical seasons and player IDs.",
+				"Search API-Football for a player.",
 			inputSchema: {
-				name: z.string().min(3).describe("Player name"),
-				season: z
-					.number()
-					.int()
-					.optional()
-					.describe("Season starting year, e.g. 2024"),
+				name: z.string().min(3),
+				season: z.number().int().optional(),
 			},
 		},
 		async ({ name, season }) => {
@@ -258,7 +203,7 @@ function createServer() {
 		"api_player_stats",
 		{
 			description:
-				"Get API-Football player statistics for a season.",
+				"Get API-Football statistics for a player and season.",
 			inputSchema: {
 				player_id: z.number().int(),
 				season: z.number().int(),
@@ -278,7 +223,7 @@ function createServer() {
 		"api_player_transfers",
 		{
 			description:
-				"Get API-Football transfer history for a player.",
+				"Get transfer history from API-Football.",
 			inputSchema: {
 				player_id: z.number().int(),
 			},
@@ -296,7 +241,7 @@ function createServer() {
 		"api_fixture_player_stats",
 		{
 			description:
-				"Get individual API-Football statistics for all players in a fixture.",
+				"Get individual player statistics for an API-Football fixture.",
 			inputSchema: {
 				fixture_id: z.number().int(),
 			},
@@ -318,7 +263,7 @@ function createServer() {
 		"statsbomb_competitions",
 		{
 			description:
-				"List all StatsBomb Open Data competitions and seasons.",
+				"List StatsBomb Open Data competitions and seasons.",
 			inputSchema: {},
 		},
 		async () => {
@@ -334,7 +279,7 @@ function createServer() {
 		"statsbomb_matches",
 		{
 			description:
-				"Get matches for a StatsBomb Open Data competition and season.",
+				"Get StatsBomb matches for a competition and season.",
 			inputSchema: {
 				competition_id: z.number().int(),
 				season_id: z.number().int(),
@@ -353,7 +298,7 @@ function createServer() {
 		"statsbomb_events",
 		{
 			description:
-				"Get full StatsBomb event data for a match including passes, pressures, recoveries, shots, duels and carries.",
+				"Get full StatsBomb event data for a match.",
 			inputSchema: {
 				match_id: z.number().int(),
 			},
@@ -371,7 +316,7 @@ function createServer() {
 		"statsbomb_lineups",
 		{
 			description:
-				"Get StatsBomb lineups and player IDs for a match.",
+				"Get StatsBomb lineups for a match.",
 			inputSchema: {
 				match_id: z.number().int(),
 			},
@@ -389,7 +334,7 @@ function createServer() {
 		"statsbomb_360",
 		{
 			description:
-				"Get StatsBomb 360 freeze-frame data for a match when available.",
+				"Get StatsBomb 360 data when available.",
 			inputSchema: {
 				match_id: z.number().int(),
 			},
@@ -416,28 +361,47 @@ function createServer() {
 		"RFPL",
 	]);
 
+	/* ---------- FULL LEAGUE DATA ---------- */
+
+	server.registerTool(
+		"understat_league",
+		{
+			description:
+				"Get complete current Understat league JSON using the AJAX endpoint. Returns teams, players and fixtures.",
+			inputSchema: {
+				league: understatLeagueSchema,
+				season: z.number().int(),
+			},
+		},
+		async ({ league, season }) => {
+			const data = await understatAjax(
+				`getLeagueData/${league}/${season}`,
+			);
+
+			return textResult(data);
+		},
+	);
+
+	/* ---------- LEAGUE PLAYERS ---------- */
+
 	server.registerTool(
 		"understat_league_players",
 		{
 			description:
-				"Get structured Understat player statistics for a league and season including xG, npxG, xA, shots, key passes, xGChain and xGBuildup.",
+				"Get all Understat players for a league season with xG, xA, npxG, shots, key passes, xGChain and xGBuildup.",
 			inputSchema: {
 				league: understatLeagueSchema,
-				season: z
-					.number()
-					.int()
-					.describe("Season starting year, e.g. 2025 for 2025/26"),
+				season: z.number().int(),
 			},
 		},
 		async ({ league, season }) => {
-			const html = await fetchUnderstatPage(
-				`https://understat.com/league/${league}/${season}`,
+			const data: any = await understatAjax(
+				`getLeagueData/${league}/${season}`,
 			);
 
-			const players = extractUnderstatJson(
-				html,
-				"playersData",
-			);
+			const players = Array.isArray(data.players)
+				? data.players
+				: [];
 
 			return textResult(
 				players.map(normalizeUnderstatPlayer),
@@ -445,39 +409,39 @@ function createServer() {
 		},
 	);
 
+	/* ---------- SEARCH PLAYER ---------- */
+
 	server.registerTool(
 		"understat_search_player",
 		{
 			description:
-				"Search for a player inside an Understat league season and return structured advanced statistics.",
+				"Search a player inside an Understat league season and return structured advanced statistics.",
 			inputSchema: {
-				query: z
-					.string()
-					.min(2)
-					.describe("Player name, e.g. Mikautadze"),
+				query: z.string().min(2),
 				league: understatLeagueSchema,
 				season: z.number().int(),
 			},
 		},
 		async ({ query, league, season }) => {
-			const html = await fetchUnderstatPage(
-				`https://understat.com/league/${league}/${season}`,
+			const data: any = await understatAjax(
+				`getLeagueData/${league}/${season}`,
 			);
 
-			const players = extractUnderstatJson(
-				html,
-				"playersData",
-			);
+			const players = Array.isArray(data.players)
+				? data.players
+				: [];
 
 			const normalized = players.map(
 				normalizeUnderstatPlayer,
 			);
 
-			const search = query.toLowerCase();
+			const search = query
+				.toLowerCase()
+				.trim();
 
 			const results = normalized.filter(
 				(player: any) =>
-					String(player.name)
+					String(player.name ?? "")
 						.toLowerCase()
 						.includes(search),
 			);
@@ -486,99 +450,185 @@ function createServer() {
 		},
 	);
 
-	server.registerTool(
-		"understat_player",
-		{
-			description:
-				"Get structured Understat player match history and available player datasets using an Understat player ID.",
-			inputSchema: {
-				player_id: z.number().int(),
-			},
-		},
-		async ({ player_id }) => {
-			const html = await fetchUnderstatPage(
-				`https://understat.com/player/${player_id}`,
-			);
-
-			const result: Record<string, unknown> = {};
-
-			for (const variable of [
-				"matchesData",
-				"shotsData",
-				"groupsData",
-			]) {
-				try {
-					result[variable] =
-						extractUnderstatJson(
-							html,
-							variable,
-						);
-				} catch {
-					// Dataset not present on every page.
-				}
-			}
-
-			return textResult(result);
-		},
-	);
-
-	server.registerTool(
-		"understat_match",
-		{
-			description:
-				"Get structured Understat match shot and match information.",
-			inputSchema: {
-				match_id: z.number().int(),
-			},
-		},
-		async ({ match_id }) => {
-			const html = await fetchUnderstatPage(
-				`https://understat.com/match/${match_id}`,
-			);
-
-			const result: Record<string, unknown> = {};
-
-			for (const variable of [
-				"shotsData",
-				"match_info",
-				"rostersData",
-			]) {
-				try {
-					result[variable] =
-						extractUnderstatJson(
-							html,
-							variable,
-						);
-				} catch {
-					// Some datasets differ by page.
-				}
-			}
-
-			return textResult(result);
-		},
-	);
+	/* ---------- LEAGUE TEAMS ---------- */
 
 	server.registerTool(
 		"understat_league_teams",
 		{
 			description:
-				"Get structured Understat team data for a league and season including xG, xGA, PPDA and expected points data when available.",
+				"Get Understat team data including xG, xGA, PPDA and xPTS for a league season.",
 			inputSchema: {
 				league: understatLeagueSchema,
 				season: z.number().int(),
 			},
 		},
 		async ({ league, season }) => {
-			const html = await fetchUnderstatPage(
-				`https://understat.com/league/${league}/${season}`,
+			const data: any = await understatAjax(
+				`getLeagueData/${league}/${season}`,
 			);
 
-			const teams = extractUnderstatJson(
-				html,
-				"teamsData",
+			return textResult(data.teams ?? {});
+		},
+	);
+
+	/* ---------- LEAGUE FIXTURES ---------- */
+
+	server.registerTool(
+		"understat_league_matches",
+		{
+			description:
+				"Get Understat fixtures and match results for a league season.",
+			inputSchema: {
+				league: understatLeagueSchema,
+				season: z.number().int(),
+			},
+		},
+		async ({ league, season }) => {
+			const data: any = await understatAjax(
+				`getLeagueData/${league}/${season}`,
 			);
 
-			return textResult(teams);
+			return textResult(data.dates ?? []);
+		},
+	);
+
+	/* ---------- PLAYER ---------- */
+
+	server.registerTool(
+		"understat_player",
+		{
+			description:
+				"Get complete Understat player data using a player ID, including matches, shots and season groups.",
+			inputSchema: {
+				player_id: z.number().int(),
+			},
+		},
+		async ({ player_id }) => {
+			const data = await understatAjax(
+				`getPlayerData/${player_id}`,
+			);
+
+			return textResult(data);
+		},
+	);
+
+	/* ---------- PLAYER MATCHES ---------- */
+
+	server.registerTool(
+		"understat_player_matches",
+		{
+			description:
+				"Get match-by-match Understat data for a player.",
+			inputSchema: {
+				player_id: z.number().int(),
+			},
+		},
+		async ({ player_id }) => {
+			const data: any = await understatAjax(
+				`getPlayerData/${player_id}`,
+			);
+
+			return textResult(data.matches ?? []);
+		},
+	);
+
+	/* ---------- PLAYER SHOTS ---------- */
+
+	server.registerTool(
+		"understat_player_shots",
+		{
+			description:
+				"Get every Understat shot recorded for a player.",
+			inputSchema: {
+				player_id: z.number().int(),
+			},
+		},
+		async ({ player_id }) => {
+			const data: any = await understatAjax(
+				`getPlayerData/${player_id}`,
+			);
+
+			return textResult(data.shots ?? []);
+		},
+	);
+
+	/* ---------- PLAYER SEASONS ---------- */
+
+	server.registerTool(
+		"understat_player_seasons",
+		{
+			description:
+				"Get season-level Understat statistics for a player.",
+			inputSchema: {
+				player_id: z.number().int(),
+			},
+		},
+		async ({ player_id }) => {
+			const data: any = await understatAjax(
+				`getPlayerData/${player_id}`,
+			);
+
+			return textResult(data.groups ?? []);
+		},
+	);
+
+	/* ---------- MATCH ---------- */
+
+	server.registerTool(
+		"understat_match",
+		{
+			description:
+				"Get Understat match data including rosters and shots.",
+			inputSchema: {
+				match_id: z.number().int(),
+			},
+		},
+		async ({ match_id }) => {
+			const data = await understatAjax(
+				`getMatchData/${match_id}`,
+			);
+
+			return textResult(data);
+		},
+	);
+
+	/* ---------- MATCH SHOTS ---------- */
+
+	server.registerTool(
+		"understat_match_shots",
+		{
+			description:
+				"Get Understat shot-level xG data for a match.",
+			inputSchema: {
+				match_id: z.number().int(),
+			},
+		},
+		async ({ match_id }) => {
+			const data: any = await understatAjax(
+				`getMatchData/${match_id}`,
+			);
+
+			return textResult(data.shots ?? {});
+		},
+	);
+
+	/* ---------- MATCH ROSTERS ---------- */
+
+	server.registerTool(
+		"understat_match_rosters",
+		{
+			description:
+				"Get Understat player rosters and individual match stats.",
+			inputSchema: {
+				match_id: z.number().int(),
+			},
+		},
+		async ({ match_id }) => {
+			const data: any = await understatAjax(
+				`getMatchData/${match_id}`,
+			);
+
+			return textResult(data.rosters ?? {});
 		},
 	);
 
