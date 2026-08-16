@@ -211,6 +211,107 @@ function createServer() {
 			return textResult(data);
 		},
 	);
+	
+		server.registerTool(
+		"sofascore_search",
+		{
+			description:
+				"Search SofaScore for players, teams and competitions.",
+			inputSchema: {
+				query: z.string().min(2).describe("Search term, for example Mikautadze"),
+			},
+		},
+		async ({ query }) => {
+			const url = new URL("https://api.sofascore.com/api/v1/search/all");
+			url.searchParams.set("q", query);
+
+			const response = await fetch(url.toString(), {
+				headers: {
+					Accept: "application/json",
+					Referer: "https://www.sofascore.com/",
+				},
+			});
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
+
+	server.registerTool(
+		"sofascore_player",
+		{
+			description:
+				"Get current SofaScore player profile using a SofaScore player ID.",
+			inputSchema: {
+				player_id: z.number().int().describe("SofaScore player ID"),
+			},
+		},
+		async ({ player_id }) => {
+			const response = await fetch(
+				`https://api.sofascore.com/api/v1/player/${player_id}`,
+				{
+					headers: {
+						Accept: "application/json",
+						Referer: "https://www.sofascore.com/",
+					},
+				},
+			);
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
+
+	server.registerTool(
+		"sofascore_player_seasons",
+		{
+			description:
+				"Get available SofaScore seasons and competitions for a player.",
+			inputSchema: {
+				player_id: z.number().int().describe("SofaScore player ID"),
+			},
+		},
+		async ({ player_id }) => {
+			const response = await fetch(
+				`https://api.sofascore.com/api/v1/player/${player_id}/statistics/seasons`,
+				{
+					headers: {
+						Accept: "application/json",
+						Referer: "https://www.sofascore.com/",
+					},
+				},
+			);
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
+
+	server.registerTool(
+		"sofascore_match_player_stats",
+		{
+			description:
+				"Get detailed statistics for a player in a specific SofaScore match.",
+			inputSchema: {
+				event_id: z.number().int().describe("SofaScore event ID"),
+				player_id: z.number().int().describe("SofaScore player ID"),
+			},
+		},
+		async ({ event_id, player_id }) => {
+			const response = await fetch(
+				`https://api.sofascore.com/api/v1/event/${event_id}/player/${player_id}/statistics`,
+				{
+					headers: {
+						Accept: "application/json",
+						Referer: "https://www.sofascore.com/",
+					},
+				},
+			);
+
+			const data = await response.json();
+			return textResult(data);
+		},
+	);
 	return server;
 }
 
