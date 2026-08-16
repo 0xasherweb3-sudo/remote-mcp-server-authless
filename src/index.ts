@@ -3,6 +3,21 @@ import { createMcpHandler } from "agents/mcp/server";
 import { env } from "cloudflare:workers";
 import { z } from "zod";
 
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function textResult(data: unknown) {
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: JSON.stringify(data, null, 2),
+			},
+		],
+	};
+}
+
 async function apiFootball(
 	path: string,
 	params: Record<string, string | number | undefined> = {},
@@ -18,54 +33,197 @@ async function apiFootball(
 	const response = await fetch(url.toString(), {
 		headers: {
 			"x-apisports-key": env.API_FOOTBALL_KEY as string,
+			Accept: "application/json",
 		},
 	});
 
-	const data = await response.json();
-
-	return data;
+	return await response.json();
 }
 
-function textResult(data: unknown) {
+async function fetchJson(url: string) {
+	const response = await fetch(url, {
+		headers: {
+			Accept: "application/json",
+			"User-Agent": "Mozilla/5.0",
+		},
+	});
+
+	if (!response.ok) {
+		throw new Error(`HTTP ${response.status} while fetching ${url}`);
+	}
+
+	return await response.json();
+}
+
+async function fetchUnderstatPage(url: string) {
+	const response = await fetch(url, {
+		headers: {
+			"User-Agent":
+				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/141 Safari/537.36",
+			Accept:
+				"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+			"Accept-Language": "en-US,en;q=0.9",
+			Referer: "https://understat.com/",
+		},
+	});
+
+	if (!response.ok) {
+		throw new Error(`Understat returned HTTP ${response.status}`);
+	}
+
+	return await response.text();
+}
+
+/**
+ * Understat stores datasets like:
+ *
+ * var playersData = JSON.parse('...');
+ *
+ * Values use \xNN escaping.
+ */
+function extractUnderstatJson(html: string, variableName: string) {
+	const variablePos = html.indexOf(`var ${variableName}`);
+
+	if (variablePos === -1) {
+		throw new Error(
+			`Understat variable "${variableName}" was not found`,
+		);
+	}
+
+	const jsonParsePos = html.indexOf("JSON.parse('", variablePos);
+
+	if (jsonParsePos === -1) {
+		throw new Error(
+			`JSON.parse block not found for "${variableName}"`,
+		);
+	}
+
+	const start = jsonParsePos + "JSON.parse('".length;
+
+	let end = start;
+
+	while (end < html.length) {
+		if (
+			html[end] === "'" &&
+			html[end - 1] !== "\\"
+		) {
+			break;
+		}
+
+		end++;
+	}
+
+	if (end >= html.length) {
+		throw new Error(
+			`End of Understat dataset "${variableName}" not found`,
+		);
+	}
+
+	const encoded = html.slice(start, end);
+
+	const decoded = encoded
+		.replace(/\\x([0-9A-Fa-f]{2})/g, (_, hex) =>
+			String.fromCharCode(parseInt(hex, 16)),
+		)
+		.replace(/\\'/g, "'")
+		.replace(/\\"/g, '"')
+		.replace(/\\\\/g, "\\");
+
+	return JSON.parse(decoded);
+}
+
+function normalizeUnderstatPlayer(player: any) {
+	const minutes = Number(player.time ?? player.minutes ?? 0);
+
+	const per90 = (value: unknown) => {
+		const number = Number(value ?? 0);
+
+		if (!minutes) return null;
+
+		return Number(((number * 90) / minutes).toFixed(3));
+	};
+
 	return {
-		content: [
-			{
-				type: "text" as const,
-				text: JSON.stringify(data, null, 2),
-			},
-		],
+		id: Number(player.id),
+		name: player.player_name,
+		team: player.team_title,
+		position: player.position,
+		games: Number(player.games ?? 0),
+		starts: Number(player.starts ?? 0),
+		minutes,
+
+		goals: Number(player.goals ?? 0),
+		assists: Number(player.assists ?? 0),
+
+		xG: Number(player.xG ?? 0),
+		npxG: Number(player.npxG ?? 0),
+		xA: Number(player.xA ?? 0),
+
+		shots: Number(player.shots ?? 0),
+		keyPasses: Number(player.key_passes ?? 0),
+
+		xGChain: Number(player.xGChain ?? 0),
+		xGBuildup: Number(player.xGBuildup ?? 0),
+
+		per90: {
+			goals: per90(player.goals),
+			assists: per90(player.assists),
+			xG: per90(player.xG),
+			npxG: per90(player.npxG),
+			xA: per90(player.xA),
+			shots: per90(player.shots),
+			keyPasses: per90(player.key_passes),
+			xGChain: per90(player.xGChain),
+			xGBuildup: per90(player.xGBuildup),
+		},
 	};
 }
 
+/* =========================================================
+   SERVER
+========================================================= */
+
 function createServer() {
 	const server = new McpServer({
-		name: "Football Data MCP",
-		version: "1.1.0",
+		name: "Football Analytics MCP",
+		version: "2.0.0",
 	});
+
+	/* =====================================================
+	   API-FOOTBALL
+	===================================================== */
 
 	server.registerTool(
 		"api_status",
 		{
-			description: "Check API-Football connection and quota",
+			description:
+				"Check API-Football connection and current subscription status.",
 			inputSchema: {},
 		},
 		async () => {
-			return textResult(await apiFootball("/status"));
+			return textResult(
+				await apiFootball("/status"),
+			);
 		},
 	);
 
 	server.registerTool(
-		"search_player",
+		"api_search_player",
 		{
 			description:
-				"Search for a football player by name and optionally season. Use this first to find the player's API-Football ID.",
+				"Search API-Football for a player. Useful for historical seasons and player IDs.",
 			inputSchema: {
-				name: z.string().min(3).describe("Player name, for example Mikautadze"),
+				name: z
+					.string()
+					.min(3)
+					.describe("Player name"),
 				season: z
 					.number()
 					.int()
 					.optional()
-					.describe("Season starting year, for example 2025 for 2025/26"),
+					.describe(
+						"Season starting year, e.g. 2024",
+					),
 			},
 		},
 		async ({ name, season }) => {
@@ -79,16 +237,13 @@ function createServer() {
 	);
 
 	server.registerTool(
-		"player_stats",
+		"api_player_stats",
 		{
 			description:
-				"Get detailed season statistics for a player using their API-Football player ID.",
+				"Get API-Football player statistics for a season.",
 			inputSchema: {
-				player_id: z.number().int().describe("API-Football player ID"),
-				season: z
-					.number()
-					.int()
-					.describe("Season starting year, for example 2025 for 2025/26"),
+				player_id: z.number().int(),
+				season: z.number().int(),
 			},
 		},
 		async ({ player_id, season }) => {
@@ -102,12 +257,12 @@ function createServer() {
 	);
 
 	server.registerTool(
-		"player_transfers",
+		"api_player_transfers",
 		{
 			description:
-				"Get the transfer history of a player using their API-Football player ID.",
+				"Get API-Football transfer history for a player.",
 			inputSchema: {
-				player_id: z.number().int().describe("API-Football player ID"),
+				player_id: z.number().int(),
 			},
 		},
 		async ({ player_id }) => {
@@ -120,212 +275,43 @@ function createServer() {
 	);
 
 	server.registerTool(
-		"fixture_player_stats",
+		"api_fixture_player_stats",
 		{
 			description:
-				"Get individual player statistics for a specific fixture.",
+				"Get individual API-Football statistics for all players in a fixture.",
 			inputSchema: {
-				fixture_id: z.number().int().describe("API-Football fixture ID"),
+				fixture_id: z.number().int(),
 			},
 		},
 		async ({ fixture_id }) => {
 			return textResult(
-				await apiFootball("/fixtures/players", {
-					fixture: fixture_id,
-				}),
-			);
-		},
-	);
-
-		server.registerTool(
-		"fotmob_search",
-		{
-			description:
-				"Search FotMob for players, teams and competitions. Use this to find FotMob IDs.",
-			inputSchema: {
-				query: z.string().min(2).describe("Search term, for example Mikautadze"),
-			},
-		},
-		async ({ query }) => {
-			const url = new URL("https://www.fotmob.com/api/searchData");
-			url.searchParams.set("term", query);
-
-			const response = await fetch(url.toString(), {
-				headers: {
-					"User-Agent": "Mozilla/5.0",
-					Accept: "application/json",
-				},
-			});
-
-			const data = await response.json();
-			return textResult(data);
-		},
-	);
-
-	server.registerTool(
-		"fotmob_player",
-		{
-			description:
-				"Get current FotMob player profile, recent matches, career information and available player statistics.",
-			inputSchema: {
-				player_id: z.number().int().describe("FotMob player ID"),
-			},
-		},
-		async ({ player_id }) => {
-			const url = new URL("https://www.fotmob.com/api/playerData");
-			url.searchParams.set("id", String(player_id));
-
-			const response = await fetch(url.toString(), {
-				headers: {
-					"User-Agent": "Mozilla/5.0",
-					Accept: "application/json",
-				},
-			});
-
-			const data = await response.json();
-			return textResult(data);
-		},
-	);
-
-	server.registerTool(
-		"fotmob_match",
-		{
-			description:
-				"Get detailed FotMob match data including lineups, events, statistics, player ratings, xG and shotmap when available.",
-			inputSchema: {
-				match_id: z.number().int().describe("FotMob match ID"),
-			},
-		},
-		async ({ match_id }) => {
-			const url = new URL("https://www.fotmob.com/api/matchDetails");
-			url.searchParams.set("matchId", String(match_id));
-
-			const response = await fetch(url.toString(), {
-				headers: {
-					"User-Agent": "Mozilla/5.0",
-					Accept: "application/json",
-				},
-			});
-
-			const data = await response.json();
-			return textResult(data);
-		},
-	);
-	
-		server.registerTool(
-		"sofascore_search",
-		{
-			description:
-				"Search SofaScore for players, teams and competitions.",
-			inputSchema: {
-				query: z.string().min(2).describe("Search term, for example Mikautadze"),
-			},
-		},
-		async ({ query }) => {
-			const url = new URL("https://api.sofascore.com/api/v1/search/all");
-			url.searchParams.set("q", query);
-
-			const response = await fetch(url.toString(), {
-				headers: {
-					Accept: "application/json",
-					Referer: "https://www.sofascore.com/",
-				},
-			});
-
-			const data = await response.json();
-			return textResult(data);
-		},
-	);
-
-	server.registerTool(
-		"sofascore_player",
-		{
-			description:
-				"Get current SofaScore player profile using a SofaScore player ID.",
-			inputSchema: {
-				player_id: z.number().int().describe("SofaScore player ID"),
-			},
-		},
-		async ({ player_id }) => {
-			const response = await fetch(
-				`https://api.sofascore.com/api/v1/player/${player_id}`,
-				{
-					headers: {
-						Accept: "application/json",
-						Referer: "https://www.sofascore.com/",
+				await apiFootball(
+					"/fixtures/players",
+					{
+						fixture: fixture_id,
 					},
-				},
+				),
 			);
-
-			const data = await response.json();
-			return textResult(data);
 		},
 	);
 
-	server.registerTool(
-		"sofascore_player_seasons",
-		{
-			description:
-				"Get available SofaScore seasons and competitions for a player.",
-			inputSchema: {
-				player_id: z.number().int().describe("SofaScore player ID"),
-			},
-		},
-		async ({ player_id }) => {
-			const response = await fetch(
-				`https://api.sofascore.com/api/v1/player/${player_id}/statistics/seasons`,
-				{
-					headers: {
-						Accept: "application/json",
-						Referer: "https://www.sofascore.com/",
-					},
-				},
-			);
+	/* =====================================================
+	   STATSBOMB OPEN DATA
+	===================================================== */
 
-			const data = await response.json();
-			return textResult(data);
-		},
-	);
-
-	server.registerTool(
-		"sofascore_match_player_stats",
-		{
-			description:
-				"Get detailed statistics for a player in a specific SofaScore match.",
-			inputSchema: {
-				event_id: z.number().int().describe("SofaScore event ID"),
-				player_id: z.number().int().describe("SofaScore player ID"),
-			},
-		},
-		async ({ event_id, player_id }) => {
-			const response = await fetch(
-				`https://api.sofascore.com/api/v1/event/${event_id}/player/${player_id}/statistics`,
-				{
-					headers: {
-						Accept: "application/json",
-						Referer: "https://www.sofascore.com/",
-					},
-				},
-			);
-
-			const data = await response.json();
-			return textResult(data);
-		},
-	);
 	server.registerTool(
 		"statsbomb_competitions",
 		{
 			description:
-				"List all competitions and seasons available in StatsBomb Open Data.",
+				"List all StatsBomb Open Data competitions and seasons.",
 			inputSchema: {},
 		},
 		async () => {
-			const response = await fetch(
-				"https://raw.githubusercontent.com/statsbomb/open-data/master/data/competitions.json",
+			return textResult(
+				await fetchJson(
+					"https://raw.githubusercontent.com/statsbomb/open-data/master/data/competitions.json",
+				),
 			);
-
-			const data = await response.json();
-			return textResult(data);
 		},
 	);
 
@@ -333,19 +319,21 @@ function createServer() {
 		"statsbomb_matches",
 		{
 			description:
-				"Get all matches for a StatsBomb competition and season.",
+				"Get matches for a StatsBomb Open Data competition and season.",
 			inputSchema: {
 				competition_id: z.number().int(),
 				season_id: z.number().int(),
 			},
 		},
-		async ({ competition_id, season_id }) => {
-			const response = await fetch(
-				`https://raw.githubusercontent.com/statsbomb/open-data/master/data/matches/${competition_id}/${season_id}.json`,
+		async ({
+			competition_id,
+			season_id,
+		}) => {
+			return textResult(
+				await fetchJson(
+					`https://raw.githubusercontent.com/statsbomb/open-data/master/data/matches/${competition_id}/${season_id}.json`,
+				),
 			);
-
-			const data = await response.json();
-			return textResult(data);
 		},
 	);
 
@@ -353,18 +341,17 @@ function createServer() {
 		"statsbomb_events",
 		{
 			description:
-				"Get detailed StatsBomb event data for a match including passes, shots, pressures, recoveries, duels and carries.",
+				"Get full StatsBomb event data for a match including passes, pressures, recoveries, shots, duels and carries.",
 			inputSchema: {
 				match_id: z.number().int(),
 			},
 		},
 		async ({ match_id }) => {
-			const response = await fetch(
-				`https://raw.githubusercontent.com/statsbomb/open-data/master/data/events/${match_id}.json`,
+			return textResult(
+				await fetchJson(
+					`https://raw.githubusercontent.com/statsbomb/open-data/master/data/events/${match_id}.json`,
+				),
 			);
-
-			const data = await response.json();
-			return textResult(data);
 		},
 	);
 
@@ -372,46 +359,175 @@ function createServer() {
 		"statsbomb_lineups",
 		{
 			description:
-				"Get StatsBomb lineups and player IDs for a specific match.",
+				"Get StatsBomb lineups and player IDs for a match.",
 			inputSchema: {
 				match_id: z.number().int(),
 			},
 		},
 		async ({ match_id }) => {
-			const response = await fetch(
-				`https://raw.githubusercontent.com/statsbomb/open-data/master/data/lineups/${match_id}.json`,
+			return textResult(
+				await fetchJson(
+					`https://raw.githubusercontent.com/statsbomb/open-data/master/data/lineups/${match_id}.json`,
+				),
 			);
-
-			const data = await response.json();
-			return textResult(data);
 		},
 	);
-		server.registerTool(
+
+	server.registerTool(
+		"statsbomb_360",
+		{
+			description:
+				"Get StatsBomb 360 freeze-frame data for a match when available.",
+			inputSchema: {
+				match_id: z.number().int(),
+			},
+		},
+		async ({ match_id }) => {
+			return textResult(
+				await fetchJson(
+					`https://raw.githubusercontent.com/statsbomb/open-data/master/data/three-sixty/${match_id}.json`,
+				),
+			);
+		},
+	);
+
+	/* =====================================================
+	   UNDERSTAT
+	===================================================== */
+
+	const understatLeagueSchema = z.enum([
+		"EPL",
+		"La_liga",
+		"Bundesliga",
+		"Serie_A",
+		"Ligue_1",
+		"RFPL",
+	]);
+
+	server.registerTool(
+		"understat_league_players",
+		{
+			description:
+				"Get structured Understat player statistics for a league and season including xG, npxG, xA, shots, key passes, xGChain and xGBuildup.",
+			inputSchema: {
+				league: understatLeagueSchema,
+				season: z
+					.number()
+					.int()
+					.describe(
+						"Season starting year, e.g. 2025 for 2025/26",
+					),
+			},
+		},
+		async ({ league, season }) => {
+			const html =
+				await fetchUnderstatPage(
+					`https://understat.com/league/${league}/${season}`,
+				);
+
+			const players =
+				extractUnderstatJson(
+					html,
+					"playersData",
+				);
+
+			return textResult(
+				players.map(
+					normalizeUnderstatPlayer,
+				),
+			);
+		},
+	);
+
+	server.registerTool(
+		"understat_search_player",
+		{
+			description:
+				"Search for a player inside an Understat league season and return structured advanced statistics.",
+			inputSchema: {
+				query: z
+					.string()
+					.min(2)
+					.describe(
+						"Player name, e.g. Mikautadze",
+					),
+				league: understatLeagueSchema,
+				season: z.number().int(),
+			},
+		},
+		async ({
+			query,
+			league,
+			season,
+		}) => {
+			const html =
+				await fetchUnderstatPage(
+					`https://understat.com/league/${league}/${season}`,
+				);
+
+			const players =
+				extractUnderstatJson(
+					html,
+					"playersData",
+				);
+
+			const normalized =
+				players.map(
+					normalizeUnderstatPlayer,
+				);
+
+			const search =
+				query.toLowerCase();
+
+			const results =
+				normalized.filter(
+					(player: any) =>
+						String(player.name)
+							.toLowerCase()
+							.includes(search),
+				);
+
+			return textResult(results);
+		},
+	);
+
+	server.registerTool(
 		"understat_player",
 		{
 			description:
-				"Get Understat player data including xG, xA, shots, key passes, xGChain and xGBuildup.",
+				"Get structured Understat player match history and available player datasets using an Understat player ID.",
 			inputSchema: {
-				player_id: z.number().int().describe("Understat player ID"),
+				player_id: z.number().int(),
 			},
 		},
 		async ({ player_id }) => {
-			const response = await fetch(
-				`https://understat.com/player/${player_id}`,
-				{
-					headers: {
-						"User-Agent": "Mozilla/5.0",
-						Accept: "text/html",
-					},
-				},
-			);
+			const html =
+				await fetchUnderstatPage(
+					`https://understat.com/player/${player_id}`,
+				);
 
-			const html = await response.text();
+			const result: Record<
+				string,
+				unknown
+			> = {};
 
-			return textResult({
-				status: response.status,
-				html,
-			});
+			for (const variable of [
+				"matchesData",
+				"shotsData",
+				"groupsData",
+			]) {
+				try {
+					result[variable] =
+						extractUnderstatJson(
+							html,
+							variable,
+						);
+				} catch {
+					// Dataset not present on every page.
+				}
+			}
+
+			return textResult(result);
 		},
 	);
 
@@ -419,68 +535,83 @@ function createServer() {
 		"understat_match",
 		{
 			description:
-				"Get raw Understat match page data used for xG and shot analysis.",
+				"Get structured Understat match shot and match information.",
 			inputSchema: {
-				match_id: z.number().int().describe("Understat match ID"),
+				match_id: z.number().int(),
 			},
 		},
 		async ({ match_id }) => {
-			const response = await fetch(
-				`https://understat.com/match/${match_id}`,
-				{
-					headers: {
-						"User-Agent": "Mozilla/5.0",
-						Accept: "text/html",
-					},
-				},
-			);
+			const html =
+				await fetchUnderstatPage(
+					`https://understat.com/match/${match_id}`,
+				);
 
-			const html = await response.text();
+			const result: Record<
+				string,
+				unknown
+			> = {};
 
-			return textResult({
-				status: response.status,
-				html,
-			});
+			for (const variable of [
+				"shotsData",
+				"match_info",
+				"rostersData",
+			]) {
+				try {
+					result[variable] =
+						extractUnderstatJson(
+							html,
+							variable,
+						);
+				} catch {
+					// Some datasets differ by page.
+				}
+			}
+
+			return textResult(result);
 		},
 	);
 
 	server.registerTool(
-		"understat_league",
+		"understat_league_teams",
 		{
 			description:
-				"Get an Understat league page for a specific season.",
+				"Get structured Understat team data for a league and season including xG, xGA, PPDA and expected points data when available.",
 			inputSchema: {
-				league: z
-					.enum(["EPL", "La_liga", "Bundesliga", "Serie_A", "Ligue_1", "RFPL"])
-					.describe("Understat league name"),
-				season: z.number().int().describe("Season starting year"),
+				league: understatLeagueSchema,
+				season: z.number().int(),
 			},
 		},
 		async ({ league, season }) => {
-			const response = await fetch(
-				`https://understat.com/league/${league}/${season}`,
-				{
-					headers: {
-						"User-Agent": "Mozilla/5.0",
-						Accept: "text/html",
-					},
-				},
-			);
+			const html =
+				await fetchUnderstatPage(
+					`https://understat.com/league/${league}/${season}`,
+				);
 
-			const html = await response.text();
+			const teams =
+				extractUnderstatJson(
+					html,
+					"teamsData",
+				);
 
-			return textResult({
-				status: response.status,
-				html,
-			});
+			return textResult(teams);
 		},
 	);
-	
+
 	return server;
 }
 
+/* =========================================================
+   CLOUDFLARE WORKER
+========================================================= */
+
 export default {
-	fetch(request, env, ctx) {
-		return createMcpHandler(createServer)(request, env, ctx);
+	fetch(
+		request: Request,
+		env: Env,
+		ctx: ExecutionContext,
+	) {
+		return createMcpHandler(
+			createServer,
+		)(request, env, ctx);
 	},
-} satisfies ExportedHandler;
+} satisfies ExportedHandler<Env>;
